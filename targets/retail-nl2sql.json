@@ -1,0 +1,26 @@
+{
+  "name": "零售经营数据智能问数系统",
+  "code": "retail-nl2sql",
+  "version": "0.3.0",
+  "app_dir": "D:/WorkBuddyWorkspace/2026-10-17-20-26-43/retail-nl2sql",
+  "entry": "server.py",
+  "port": 8000,
+  "health_path": "/api/health",
+  "smoke_question": "一共有多少条订单",
+  "python_min": "3.10",
+  "require_gpu": true,
+  "min_free_gb": 5,
+  "models": [
+    {"name": "qwen2.5:7b", "role": "主模型", "size_gb": 4.68},
+    {"name": "qwen2.5-coder:3b", "role": "快速模型", "size_gb": 1.93},
+    {"name": "bge-m3", "role": "向量模型", "size_gb": 1.16}
+  ],
+  "data_files": [
+    "data/retail_v1.db"
+  ],
+  "testset": "tests/cases.csv",
+  "exclude": [
+    "data/uploads", "logs", "__pycache__", ".venv", ".git",
+    "tests/result_*.csv", "*.pyc"
+  ]
+}
