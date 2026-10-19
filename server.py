@@ -103,11 +103,57 @@ class Handler(BaseHTTPRequestHandler):
         with open(path, "rb") as f:
             self._send(200, f.read(), MIME.get(ext, "application/octet-stream"))
 
+    # ---------- SSE ----------
+    def _start_sse(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+    def _sse(self, event, data):
+        self.wfile.write(
+            f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+            .encode("utf-8"))
+        self.wfile.flush()
+
     # ---------- GET ----------
     def do_GET(self):
         u = urlparse(self.path)
         p, qs = u.path, parse_qs(u.query)
         try:
+            if p == "/api/eval/stream":
+                tfile = (qs.get("target") or ["retail-nl2sql.json"])[0]
+                raw_limit = (qs.get("limit") or ["0"])[0]
+                limit = int(raw_limit) if raw_limit.isdigit() and int(raw_limit) > 0 else None
+                target = load_target(tfile)
+                os.makedirs(OUT_DIR, exist_ok=True)
+
+                self._start_sse()
+                final = None
+                try:
+                    for item in evaluate.run_eval_stream(target, limit=limit):
+                        if "error" in item:
+                            self._sse("error", item)
+                            break
+                        if item.get("done"):
+                            final = item
+                            # 先把报告落盘再推 summary，避免客户端断开导致文件没写
+                            name = f"{target['code']}-eval-report.md"
+                            self._write_md(name, report.eval_report(final, target))
+                            self._sse("summary", {
+                                "summary": item["summary"],
+                                "failures": item["failures"][:20],
+                            })
+                            self._sse("report", {"name": name})
+                        else:
+                            self._sse("progress", item)
+                    self._sse("done", {})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
             if p in ("/", "/index.html"):
                 self._static("index.html")
             elif p == "/api/targets":

@@ -465,8 +465,110 @@ function renderAll(r){
   setTimeout(() => openReport(r.report), 300);
 }
 
+/* ---------- 流式评测 ---------- */
+async function runEvalStream(){
+  document.querySelectorAll(".act").forEach(b => b.disabled = true);
+  const url = `/api/eval/stream?target=${encodeURIComponent(current || "retail-nl2sql.json")}`;
+  const t0 = Date.now();
+
+  out.innerHTML = `
+    <div class="panel">
+      <div class="p-head"><span class="p-title">效果评测</span>
+        <span class="p-time" id="evProg">正在连接…</span></div>
+      <div class="ptrack"><div class="pfill" id="evBar" style="width:0"></div></div>
+      <div class="bigro" style="margin-top:20px">
+        <div class="bignum"><span id="evAcc">—</span><small>%</small>
+          <span class="lb">实时准确率</span></div>
+        <div class="kv">
+          <div><b id="evPass">0</b>通过</div>
+          <div><b id="evDone">0</b>已完成</div>
+          <div><b id="evAvg">—</b>平均耗时</div>
+        </div>
+      </div>
+      <div id="evList" style="max-height:300px;overflow:auto;border-top:1px solid #F1F3F6;padding-top:6px"></div>
+    </div>`;
+
+  const listEl = () => $("evList");
+  let msSum = 0, nSum = 0;
+
+  try{
+    const resp = await fetch(url);
+    if (!resp.ok || !resp.body) throw new Error("流式接口不可用");
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+
+    while (true){
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0){
+        const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        let ev = "message", data = "";
+        chunk.split("\n").forEach(line => {
+          if (line.startsWith("event: ")) ev = line.slice(7).trim();
+          else if (line.startsWith("data: ")) data = line.slice(6);
+        });
+        if (!data) continue;
+        let o; try { o = JSON.parse(data); } catch(e){ continue; }
+
+        if (ev === "progress"){
+          nSum++; msSum += o.ms || 0;
+          const acc = (o.running_accuracy * 100).toFixed(1);
+          $("evProg").textContent = `${o.index} / ${o.total} · 已用 ${((Date.now()-t0)/1000).toFixed(0)}s`;
+          $("evBar").style.width = (o.index / o.total * 100).toFixed(1) + "%";
+          $("evAcc").textContent = acc;
+          $("evPass").textContent = o.running_passed;
+          $("evDone").textContent = o.index;
+          $("evAvg").textContent = (msSum / nSum / 1000).toFixed(2) + "s";
+
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;gap:10px;font-size:12px;padding:5px 2px;border-bottom:1px solid #FAFBFC;color:#475569";
+          row.innerHTML =
+            `<span style="width:52px;color:${o.pass ? "#047857" : "#B91C1C"};font-weight:500">${o.pass ? "通过" : "未过"}</span>
+             <span style="width:56px;color:#8A94A6">${esc(o.id)}</span>
+             <span style="flex:1">${esc(o.question)}</span>
+             <span style="width:64px;text-align:right;color:#8A94A6">${(o.ms/1000).toFixed(2)}s</span>`;
+          listEl().appendChild(row);
+          listEl().scrollTop = listEl().scrollHeight;
+        }
+        else if (ev === "summary"){
+          const s = o.summary;
+          $("evAcc").textContent = (s.accuracy * 100).toFixed(1);
+          $("evPass").textContent = `${s.passed}/${s.total}`;
+          $("evDone").textContent = s.total;
+          $("evAvg").textContent = (s.avg_ms / 1000).toFixed(2) + "s";
+          $("evProg").textContent = `完成 · P50 ${(s.p50_ms/1000).toFixed(2)}s · P95 ${(s.p95_ms/1000).toFixed(2)}s · ${s.wall_s}s`;
+          $("evBar").style.width = "100%";
+          if ((o.failures || []).length){
+            const h = document.createElement("div");
+            h.style.cssText = "margin-top:12px;font-size:12px;color:#B45309";
+            h.textContent = `未通过 ${o.failures.length} 条：`
+              + o.failures.map(f => `${f.id}（期望 ${f.expect}，实际 ${f.status}）`).join("；");
+            listEl().appendChild(h);
+          }
+        }
+        else if (ev === "report"){
+          loadReports();
+        }
+        else if (ev === "error"){
+          throw new Error(o.error || "评测失败");
+        }
+      }
+    }
+  }catch(e){
+    out.innerHTML = `<div class="panel"><div class="errbox">
+      <div class="t">评测中断</div><pre>${esc(e.message)}</pre></div></div>`;
+  }finally{
+    document.querySelectorAll(".act").forEach(b => b.disabled = false);
+  }
+}
+
 /* ---------- 执行 ---------- */
 async function run(name){
+  if (name === "eval"){ return runEvalStream(); }
   document.querySelectorAll(".act").forEach(b => b.disabled = true);
   showLoading(name);
   const t0 = Date.now();
