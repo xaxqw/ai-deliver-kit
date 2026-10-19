@@ -147,11 +147,87 @@ def cmd_all(target, out):
     return p
 
 
+def cmd_menu(target_path=None, out_override=None):
+    """交互菜单：给桌面快捷方式用，双击就能操作，不用记命令"""
+    import glob
+
+    if target_path:
+        tp = target_path
+    else:
+        found = sorted(glob.glob(os.path.join(KIT_DIR, "targets", "*.json")))
+        if not found:
+            print("未找到 targets/*.json，请先添加目标应用配置")
+            return
+        if len(found) == 1:
+            tp = found[0]
+        else:
+            print("\n可用目标应用：")
+            for i, f in enumerate(found, 1):
+                print(f"  {i}. {os.path.basename(f)}")
+            pick = input("请选择编号：").strip()
+            try:
+                tp = found[int(pick) - 1]
+            except (ValueError, IndexError):
+                print("选择无效")
+                return
+
+    target = load_target(tp)
+    out = out_dir(out_override)
+
+    menu = f"""
+  ============================================================
+    AI 应用交付工具包
+    目标应用：{target['name']}
+    版本：{target['code']} v{target['version']}
+  ============================================================
+
+    1. 环境体检          12 项检查，判断这台机器能不能装
+    2. 制作离线部署包     打包 + 安装脚本 + 文件哈希
+    3. 部署验证          拉起来跑一次真实调用
+    4. 效果评测          跑测试集，出准确率与延迟
+    5. 完整交付流程       1-4 全跑，再汇总验收报告
+
+    0. 退出
+"""
+    while True:
+        print(menu)
+        try:
+            c = input("  请选择 [0-5]：").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if c == "0" or c.lower() == "q":
+            break
+        elif c == "1":
+            cmd_check(target, out)
+        elif c == "2":
+            cmd_bundle(target, out)
+        elif c == "3":
+            cmd_smoke(target, out)
+        elif c == "4":
+            cmd_eval(target, out)
+        elif c == "5":
+            cmd_all(target, out)
+        else:
+            print("  无效选择，请输入 0-5")
+
+        try:
+            input("\n  按回车返回菜单...")
+        except (EOFError, KeyboardInterrupt):
+            break
+
+    print("\n  已退出。报告在 out/ 目录下。")
+
+
 def main():
     ap = argparse.ArgumentParser(
         prog="deliverkit",
         description="AI 应用交付工具包：环境体检 / 部署验证 / 效果评测 / 离线打包")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p_menu = sub.add_parser("menu", help="交互菜单（桌面快捷方式用）")
+    p_menu.add_argument("--target", "-t", default=None, help="目标应用配置 json")
+    p_menu.add_argument("--out", "-o", default=None, help="报告输出目录")
 
     for name, help_text in [
         ("check", "环境体检"),
@@ -168,6 +244,11 @@ def main():
                            help="只跑前 N 条")
 
     args = ap.parse_args()
+
+    if args.cmd == "menu":
+        cmd_menu(args.target, args.out)
+        return
+
     target = load_target(args.target)
     out = out_dir(args.out)
 
