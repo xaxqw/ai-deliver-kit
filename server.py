@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-from deliverkit import bundle, env, evaluate, report, smoke  # noqa: E402
+from deliverkit import bundle, env, evaluate, patrol, report, smoke, snapshot  # noqa: E402
 
 STATIC = os.path.join(ROOT, "static")
 TARGET_DIR = os.path.join(ROOT, "targets")
@@ -158,6 +158,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._static("index.html")
             elif p == "/api/targets":
                 self._json({"targets": list_targets()})
+            elif p == "/api/snapshots":
+                tfile = (qs.get("target") or ["retail-nl2sql.json"])[0]
+                target = load_target(tfile)
+                self._json({"snapshots": snapshot.list_snapshots(OUT_DIR, target["code"])})
             elif p == "/api/reports":
                 self._json({"reports": list_reports()})
             elif p == "/api/report":
@@ -229,6 +233,22 @@ class Handler(BaseHTTPRequestHandler):
                     "summary": r["summary"],
                     "failures": r["failures"][:20],
                 }, "report": f"{target['code']}-eval-report.md"})
+
+            elif p == "/api/patrol":
+                interval = int(data.get("interval", 2))
+                count = int(data.get("count", 5))
+                r = patrol.patrol(target, interval=interval, count=count)
+                self._json({"type": "patrol", "result": r})
+
+            elif p == "/api/snapshot":
+                r = snapshot.create_snapshot(
+                    target, OUT_DIR, label=data.get("label", "manual"))
+                self._json({"type": "snapshot", "result": r})
+
+            elif p == "/api/rollback":
+                # 控制台只做预演：真回滚要人确认，走命令行 --apply
+                r = snapshot.restore(target, OUT_DIR, data.get("to", ""), apply=False)
+                self._json({"type": "rollback", "result": r})
 
             elif p == "/api/all":
                 env_r = env.run_checks(target)

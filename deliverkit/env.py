@@ -228,8 +228,14 @@ def run_checks(target: dict) -> dict:
     checks.append(check_internet())
 
     ollama_r, installed = check_ollama()
-    checks.append(ollama_r)
-    checks.append(check_models(target.get("models", []), installed))
+    if not target.get("models"):
+        # 该应用不依赖本地模型（如规则引擎），Ollama 在不在都不影响交付
+        checks.append(_r("模型服务", OK, "该应用不依赖本地模型，跳过检查",
+                         key="ollama"))
+        checks.append(check_models([], []))
+    else:
+        checks.append(ollama_r)
+        checks.append(check_models(target.get("models", []), installed))
 
     checks.append(check_app_dir(target["app_dir"]))
     checks.append(check_data_files(target["app_dir"], target.get("data_files", [])))

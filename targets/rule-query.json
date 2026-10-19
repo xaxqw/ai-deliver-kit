@@ -1,0 +1,17 @@
+{
+  "name": "轻量销售查询服务",
+  "code": "rule-query",
+  "version": "0.1.0",
+  "app_dir": "D:/WorkBuddyWorkspace/2026-10-17-20-26-43/app2-rule-query",
+  "entry": "server.py",
+  "port": 8200,
+  "health_path": "/api/health",
+  "smoke_question": "一共有多少条记录",
+  "python_min": "3.10",
+  "require_gpu": false,
+  "min_free_gb": 1,
+  "models": [],
+  "data_files": ["data/sales.csv"],
+  "testset": "tests/cases.csv",
+  "exclude": ["__pycache__", ".venv", ".git"]
+}

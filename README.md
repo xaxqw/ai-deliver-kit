@@ -102,6 +102,63 @@ python -m deliverkit all -t targets/retail-nl2sql.json
 
 评测默认**关闭缓存**——开着缓存跑，P50 会失真成 0 秒，看起来漂亮但没意义。这一点在报告里也写明了。
 
+## 通用性验证：交付两个完全不同的应用
+
+只交付自己的项目说明不了什么。所以准备了第二个形态完全不同的目标：
+
+| | 零售问数系统 | 轻量销售查询服务 |
+|---|---|---|
+| 技术栈 | 大模型 + SQLite + GPU | 纯规则引擎，无模型 |
+| 模型依赖 | 3 个（7b / 3b / bge-m3） | 无 |
+| GPU | 必需 | 不需要 |
+| 端到端延迟 | 1937 ms | **15 ms** |
+| 体检结果 | 11 通过 | 11 通过 |
+| 部署验证 | 4/4 通过 | 4/4 通过（自启动 541ms） |
+
+跑同一个命令，工具会自动适配：
+
+```bash
+python -m deliverkit check -t targets/rule-query.json
+python -m deliverkit smoke -t targets/rule-query.json
+```
+
+规则引擎版没有模型依赖，体检会自动跳过 Ollama 检查并标注「该应用不依赖本地模型」，而不是误报成失败。**这说明工具判断的是能力需求，不是固定套路。**
+
+## 巡检与回滚
+
+冒烟只能证明「那一刻没问题」。真实运维还要两件事：稳定性要看一段时间，出问题要能退回去。
+
+### 巡检（看时间维度）
+
+```bash
+python -m deliverkit patrol -t targets/rule-query.json -i 2 -n 5
+```
+
+```
+  [1/5] 通过  23:02:12  健康 65ms · 问数 14ms · rule-engine-v1
+  [2/5] 通过  23:02:15  健康 3ms · 问数 22ms · rule-engine-v1
+  ...
+  成功率 100%   平均 13ms   最大 22ms   波动 161.5%   ->  稳定
+```
+
+**判定逻辑里有个坑**：低延迟场景下百分比抖动会失真——1ms 到 22ms 是「161% 波动」，但绝对差只有 21ms，毫无意义。所以抖动同时看比例和绝对差（`<50%` 或 `绝对差 <100ms` 都算稳定）。
+
+### 快照与回滚（看版本维度）
+
+```bash
+python -m deliverkit snapshot -t targets/rule-query.json -l before-upgrade
+python -m deliverkit rollback -t targets/rule-query.json --to <快照id>          # 预演
+python -m deliverkit rollback -t targets/rule-query.json --to <快照id> --apply  # 执行
+```
+
+设计上刻意保守，因为回滚本身可能造成不可逆损失：
+
+- **默认只预演**，列出会修改/新增/删除哪些文件，不写盘
+- **执行前先自动备份当前状态**，回滚失败还能再回滚回去
+- **只碰代码**，`data/`、`logs/`、`*.db` 一律不动——数据没法回滚
+
+实测：注入一行改动 → 预演显示「修改 server.py」→ 执行回滚 → 文件恢复、改动消失、回滚前状态已备份。
+
 ## 技术要点
 
 **1. 零第三方依赖**
@@ -127,7 +184,9 @@ ai-deliver-kit/
 │   ├── env.py        12 项环境体检
 │   ├── bundle.py     离线打包 + 安装脚本生成
 │   ├── smoke.py      部署验证（启动/健康/端到端/指标）
-│   ├── evaluate.py   测试集评测
+│   ├── evaluate.py   测试集评测（支持流式进度）
+│   ├── patrol.py     持续巡检
+│   ├── snapshot.py   快照与回滚
 │   ├── report.py     四类报告生成
 │   └── __main__.py   命令行入口
 ├── targets/

@@ -21,7 +21,7 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-from . import env, evaluate, report, smoke  # noqa: E402
+from . import env, evaluate, patrol, report, snapshot, smoke  # noqa: E402
 
 KIT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICON = {"ok": "通过", "warn": "警告", "fail": "失败"}
@@ -219,6 +219,78 @@ def cmd_menu(target_path=None, out_override=None):
     print("\n  已退出。报告在 out/ 目录下。")
 
 
+def cmd_patrol(target, out, interval=5, count=6):
+    print(f"\n持续巡检：{target['name']}")
+    print(f"  每 {interval} 秒一次，共 {count} 次（约 {interval * (count - 1)} 秒）")
+    line()
+
+    def on_prog(i, total, rec):
+        print(f"  [{i}/{total}] {pad(ICON[rec['status']], 6)}{rec['ts']}  {rec['detail']}")
+
+    r = patrol.patrol(target, interval=interval, count=count, on_progress=on_prog)
+    s = r["summary"]
+    line()
+    print(f"  成功率 {s['success_rate']:.0%}   平均 {s['avg_ms']}ms   "
+          f"最大 {s['max_ms']}ms   波动 {s['jitter_pct']}%   ->  {s['verdict']}\n")
+    if s["fail"]:
+        print(f"  异常 {s['fail']} 次，明细：")
+        for rec in r["records"]:
+            if rec["status"] == "fail":
+                print(f"    {rec['ts']}  {rec['detail']}")
+        print()
+    return r
+
+
+def cmd_snapshot(target, out, label="manual"):
+    r = snapshot.create_snapshot(target, out, label)
+    print()
+    if not r.get("ok"):
+        print(f"  快照失败：{r.get('error')}")
+        return r
+    print(f"  快照已创建：{r['id']}")
+    print(f"  {r['file_count']} 个文件，{r['size_kb']} KB")
+    print(f"  路径：{r['path']}\n")
+    return r
+
+
+def cmd_snapshots(target, out):
+    items = snapshot.list_snapshots(out, target["code"])
+    print(f"\n{target['name']} 的快照（{len(items)} 个）")
+    line()
+    if not items:
+        print("  还没有快照，先执行 snapshot 命令\n")
+        return items
+    for it in items:
+        print(f"  {pad(it['id'], 26)}{pad(it['created'], 22)}"
+              f"{it['file_count']:>3} 文件")
+    print()
+    return items
+
+
+def cmd_rollback(target, out, snap_id, apply=False):
+    mode = "执行回滚" if apply else "预演回滚（不写文件）"
+    print(f"\n{mode}：{target['name']}  ->  {snap_id}")
+    line()
+    r = snapshot.restore(target, out, snap_id, apply=apply)
+    if not r.get("ok"):
+        print(f"  失败：{r.get('error')}\n")
+        return r
+
+    d = r.get("diff") or {}
+    if d:
+        print(f"  与当前目录的差异：共 {d['total_diff']} 个文件")
+        for tag, key in (("修改", "changed"), ("新增", "removed"), ("删除", "added")):
+            for f in d.get(key, [])[:10]:
+                print(f"    {tag}  {f}")
+            if len(d.get(key, [])) > 10:
+                print(f"    {tag}  ... 另有 {len(d[key]) - 10} 个")
+    print(f"\n  {r.get('message', '')}")
+    if not apply:
+        print(f"  确认后加 --apply 真正执行（会自动先备份当前状态）")
+    print()
+    return r
+
+
 def main():
     ap = argparse.ArgumentParser(
         prog="deliverkit",
@@ -243,6 +315,28 @@ def main():
             p.add_argument("--limit", "-n", type=int, default=None,
                            help="只跑前 N 条")
 
+    p = sub.add_parser("patrol", help="持续巡检（反复探测服务稳定性）")
+    p.add_argument("--target", "-t", required=True)
+    p.add_argument("--out", "-o", default=None)
+    p.add_argument("--interval", "-i", type=int, default=5, help="间隔秒数")
+    p.add_argument("--count", "-n", type=int, default=6, help="巡检次数")
+
+    p = sub.add_parser("snapshot", help="创建代码快照")
+    p.add_argument("--target", "-t", required=True)
+    p.add_argument("--out", "-o", default=None)
+    p.add_argument("--label", "-l", default="manual", help="快照标签")
+
+    p = sub.add_parser("snapshots", help="列出已有快照")
+    p.add_argument("--target", "-t", required=True)
+    p.add_argument("--out", "-o", default=None)
+
+    p = sub.add_parser("rollback", help="回滚到指定快照")
+    p.add_argument("--target", "-t", required=True)
+    p.add_argument("--out", "-o", default=None)
+    p.add_argument("--to", required=True, help="快照 id")
+    p.add_argument("--apply", action="store_true",
+                   help="真正执行（不加则只预演差异）")
+
     args = ap.parse_args()
 
     if args.cmd == "menu":
@@ -263,6 +357,14 @@ def main():
         cmd_bundle(target, out)
     elif args.cmd == "all":
         cmd_all(target, out)
+    elif args.cmd == "patrol":
+        cmd_patrol(target, out, interval=args.interval, count=args.count)
+    elif args.cmd == "snapshot":
+        cmd_snapshot(target, out, label=args.label)
+    elif args.cmd == "snapshots":
+        cmd_snapshots(target, out)
+    elif args.cmd == "rollback":
+        cmd_rollback(target, out, args.to, apply=args.apply)
     print(f"总耗时 {time.perf_counter() - t0:.1f}s")
 
 
