@@ -1,0 +1,36 @@
+{
+  "name": "智能时序预测平台",
+  "code": "ts-forecast",
+  "version": "1.0.0",
+  "app_dir": "D:/TimeSeriesForecast",
+  "port": 8300,
+  "python_min": "3.10",
+  "require_gpu": false,
+  "min_free_gb": 1,
+  "models": [],
+  "data_files": [],
+  "exclude": [
+    "__pycache__", ".git", "*.docx", "*.pyc",
+    "vendor", "sample-data"
+  ],
+  "launch": {
+    "python": "C:/Users/xuanx/.workbuddy/binaries/python/envs/default/Scripts/python.exe",
+    "cmd": ["{python}", "-m", "uvicorn", "api:app", "--host", "127.0.0.1", "--port", "{port}"],
+    "cwd": "."
+  },
+  "health": {
+    "path": "/api/health",
+    "ok_when": {"field": "status", "equals": "ok"}
+  },
+  "smoke": {
+    "name": "预测调用",
+    "path": "/api/forecast",
+    "method": "POST",
+    "body": {
+      "values": [120, 132, 128, 145, 138, 150, 142, 158, 149, 163, 155, 170, 161, 176, 168],
+      "model": "auto",
+      "horizon": 3
+    },
+    "ok_when": {"field": "forecast", "non_empty": true}
+  }
+}

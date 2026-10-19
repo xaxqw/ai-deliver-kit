@@ -102,27 +102,45 @@ python -m deliverkit all -t targets/retail-nl2sql.json
 
 评测默认**关闭缓存**——开着缓存跑，P50 会失真成 0 秒，看起来漂亮但没意义。这一点在报告里也写明了。
 
-## 通用性验证：交付两个完全不同的应用
+## 通用性验证：交付三个完全不同的应用
 
-只交付自己的项目说明不了什么。所以准备了第二个形态完全不同的目标：
+只交付自己的项目说明不了什么。所以准备了三个形态完全不同的目标：
 
-| | 零售问数系统 | 轻量销售查询服务 |
-|---|---|---|
-| 技术栈 | 大模型 + SQLite + GPU | 纯规则引擎，无模型 |
-| 模型依赖 | 3 个（7b / 3b / bge-m3） | 无 |
-| GPU | 必需 | 不需要 |
-| 端到端延迟 | 1937 ms | **15 ms** |
-| 体检结果 | 11 通过 | 11 通过 |
-| 部署验证 | 4/4 通过 | 4/4 通过（自启动 541ms） |
+| | 零售问数系统 | 轻量销售查询 | 智能时序预测平台 |
+|---|---|---|---|
+| 技术栈 | 大模型 + SQLite | 纯 Python 规则 | FastAPI + uvicorn |
+| 启动方式 | `python server.py 8000` | `python server.py 8200` | `uvicorn api:app --port 8300` |
+| 健康判定 | `llm.ok == true` | `llm.ok == true` | `status == "ok"` |
+| 业务接口 | `POST /api/ask` | `POST /api/ask` | `POST /api/forecast` |
+| 模型依赖 | 3 个 | 无 | 无 |
+| GPU | 必需 | 不需要 | 不需要 |
+| 业务调用延迟 | 1937 ms | 15 ms | 169 ms |
+| 体检 / 部署验证 | 11 通过 / 4-4 | 11 通过 / 4-4 | 11 通过 / 4-4 |
 
-跑同一个命令，工具会自动适配：
+三个应用的启动命令、健康判定字段、业务接口全都不一样，工具靠 `targets/*.json` 里的声明来适配，**没有改任何一行业务代码**：
 
-```bash
-python -m deliverkit check -t targets/rule-query.json
-python -m deliverkit smoke -t targets/rule-query.json
+```json
+"launch": {
+  "python": "<装了 fastapi 的那个解释器>",
+  "cmd": ["{python}", "-m", "uvicorn", "api:app", "--host", "127.0.0.1", "--port", "{port}"]
+},
+"health": {"path": "/api/health", "ok_when": {"field": "status", "equals": "ok"}},
+"smoke": {
+  "path": "/api/forecast",
+  "body": {"values": [120, 132, 138], "horizon": 3},
+  "ok_when": {"field": "forecast", "non_empty": true}
+}
 ```
 
-规则引擎版没有模型依赖，体检会自动跳过 Ollama 检查并标注「该应用不依赖本地模型」，而不是误报成失败。**这说明工具判断的是能力需求，不是固定套路。**
+**这才是「通用」的意思**：不是让所有应用迁就一套固定契约，而是让工具能读懂不同应用的契约。
+
+三个细节值得说：
+
+- **解释器可以不一样**：时序预测要用装了 FastAPI 的 venv，不能用跑工具的那个 Python，所以 `launch.python` 单独指定
+- **健康判定不能硬编码**：写死 `llm.ok` 只能适配一类服务，改成声明式规则（`equals` / `non_empty` / `gte`）
+- **缺指标接口不算失败**：时序预测没有 `/api/metrics`，判为警告而不是错误——不是每个应用都必须有可观测性接口
+
+注意 `targets/ts-forecast.json` 指向本机绝对路径，别人 clone 后需要改；`targets/rule-query.json` 用相对路径，开箱即可跑。
 
 ## 巡检与回滚
 

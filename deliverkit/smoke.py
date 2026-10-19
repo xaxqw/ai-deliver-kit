@@ -51,6 +51,38 @@ def _kill_tree(pid):
         pass
 
 
+def _get_path(obj, path, default=None):
+    """按点路径取值：health.llm.ok -> obj['health']['llm']['ok']"""
+    cur = obj
+    for k in (path or "").split("."):
+        if isinstance(cur, dict) and k in cur:
+            cur = cur[k]
+        else:
+            return default
+    return cur
+
+
+def _judge(obj, rule):
+    """按声明式规则判定响应是否正常
+
+    不同应用的返回结构千差万别，硬编码 llm.ok 只能适配一类服务。
+    规则写成 {"field": "status", "equals": "ok"} 这种形式就能覆盖大多数情况。
+    """
+    if not rule:
+        return None
+    v = _get_path(obj, rule.get("field", ""))
+    if "equals" in rule:
+        return v == rule["equals"]
+    if "non_empty" in rule:
+        return bool(v)
+    if "gte" in rule:
+        try:
+            return float(v) >= float(rule["gte"])
+        except (TypeError, ValueError):
+            return False
+    return bool(v)
+
+
 def run_smoke(target: dict, timeout_s: int = 90) -> dict:
     app_dir = target["app_dir"]
     port = target.get("port", 8000)
@@ -59,10 +91,15 @@ def run_smoke(target: dict, timeout_s: int = 90) -> dict:
     proc = None
     started_by_us = False
 
+    # 健康检查路径：优先用 health.path，兼容旧的 health_path
+    hcfg = target.get("health") or {}
+    health_path = hcfg.get("path") or target.get("health_path", "/api/health")
+    health_rule = hcfg.get("ok_when")
+
     # 1) 端口与既有服务
     if _port_open(port):
         try:
-            _get(f"{base}{target.get('health_path', '/api/health')}", timeout=5)
+            _get(f"{base}{health_path}", timeout=5)
             steps.append({"name": "服务探测", "status": OK, "ms": "—",
                           "detail": f"{port} 已有实例在运行，直接复用"})
         except Exception as e:
@@ -71,18 +108,30 @@ def run_smoke(target: dict, timeout_s: int = 90) -> dict:
             return {"passed": False, "steps": steps,
                     "error": f"端口 {port} 被未知进程占用"}
     else:
-        # 2) 启动服务
-        entry = os.path.join(app_dir, target.get("entry", "server.py"))
-        if not os.path.exists(entry):
-            steps.append({"name": "启动服务", "status": FAIL, "ms": "—",
-                          "detail": f"入口文件不存在：{entry}"})
-            return {"passed": False, "steps": steps, "error": "入口文件缺失"}
+        # 2) 启动服务：优先用 target 声明的 launch 命令
+        launch = target.get("launch")
+        if launch:
+            # 应用可能需要特定的解释器（比如装了 FastAPI 的那个 venv），
+            # 不能用跑工具的这个解释器硬套
+            py = launch.get("python") or sys.executable
+            cmd = [str(c).format(python=py, port=port, app_dir=app_dir)
+                   for c in launch.get("cmd", [])]
+            cwd = os.path.join(app_dir, launch.get("cwd") or ".")
+            entry_desc = " ".join(cmd[1:])[:80]
+        else:
+            entry = os.path.join(app_dir, target.get("entry", "server.py"))
+            if not os.path.exists(entry):
+                steps.append({"name": "启动服务", "status": FAIL, "ms": "—",
+                              "detail": f"入口文件不存在：{entry}"})
+                return {"passed": False, "steps": steps, "error": "入口文件缺失"}
+            cmd = [sys.executable, "-u", entry, str(port)]
+            cwd = app_dir
+            entry_desc = target.get("entry", "server.py")
 
         t0 = time.perf_counter()
         try:
             proc = subprocess.Popen(
-                [sys.executable, "-u", entry, str(port)],
-                cwd=app_dir,
+                cmd, cwd=cwd,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
             )
@@ -114,38 +163,65 @@ def run_smoke(target: dict, timeout_s: int = 90) -> dict:
             return {"passed": False, "steps": steps,
                     "error": f"服务未能启动\n{out}"}
         steps.append({"name": "启动服务", "status": OK, "ms": f"{ms}ms",
-                      "detail": f"监听 {port}，冷启动耗时含模型加载"})
+                      "detail": f"监听 {port}（{entry_desc}）"})
 
     try:
         # 4) 健康检查
         t = time.perf_counter()
         try:
-            status, health = _get(f"{base}{target.get('health_path', '/api/health')}")
+            status, health = _get(f"{base}{health_path}")
             hms = int((time.perf_counter() - t) * 1000)
-            llm = (health.get("llm") or {})
-            llm_ok = llm.get("ok", False)
-            steps.append({"name": "健康检查", "status": OK if llm_ok else WARN,
-                          "ms": f"{hms}ms",
-                          "detail": f"HTTP {status}，模型 "
-                                    f"{llm.get('model', '-')} "
-                                    f"{'就绪' if llm_ok else '未就绪'}"})
+            if health_rule:
+                # 声明式判定：不同应用的返回结构不同，不能硬编码 llm.ok
+                health_ok = bool(_judge(health, health_rule))
+                shown = _get_path(health, health_rule.get("field", ""), "-")
+                detail = f"HTTP {status}，{health_rule.get('field')}={shown}"
+            else:
+                llm = (health.get("llm") or {})
+                health_ok = llm.get("ok", False)
+                detail = (f"HTTP {status}，模型 {llm.get('model', '-')} "
+                          f"{'就绪' if health_ok else '未就绪'}")
+            steps.append({"name": "健康检查", "status": OK if health_ok else WARN,
+                          "ms": f"{hms}ms", "detail": detail})
         except Exception as e:
             steps.append({"name": "健康检查", "status": FAIL, "ms": "—",
                           "detail": str(e)[:120]})
             return {"passed": False, "steps": steps, "error": str(e)}
 
-        # 5) 端到端问数
-        q = target.get("smoke_question", "一共有多少条记录")
+        # 5) 端到端业务调用
+        scfg = target.get("smoke") or {}
         t = time.perf_counter()
         try:
-            res = _post(f"{base}/api/ask", {"question": q, "use_cache": False})
-            ams = int((time.perf_counter() - t) * 1000)
-            ok = res.get("status") == "ok" and bool(res.get("answer"))
-            steps.append({"name": "端到端问数", "status": OK if ok else FAIL,
-                          "ms": f"{ams}ms",
-                          "detail": f"「{q}」→ {(res.get('answer') or '')[:40]}"})
-            sample = {"question": q, "answer": (res.get("answer") or "")[:200],
-                      "ms": ams}
+            if scfg:
+                spath = scfg.get("path", "")
+                method = (scfg.get("method") or "POST").upper()
+                body = scfg.get("body") or {}
+                if method == "GET":
+                    data = _get(f"{base}{spath}", timeout=180)[1]
+                else:
+                    body = json.loads(json.dumps(body))   # 深拷贝，避免改动配置
+                    data = _post(f"{base}{spath}", body)
+                ams = int((time.perf_counter() - t) * 1000)
+                ok = _judge(data, scfg.get("ok_when")) if scfg.get("ok_when") else bool(data)
+                brief = json.dumps(data, ensure_ascii=False)[:110]
+                steps.append({
+                    "name": scfg.get("name", "业务调用"),
+                    "status": OK if ok else FAIL,
+                    "ms": f"{ams}ms",
+                    "detail": f"{method} {spath} → {brief}",
+                })
+                sample = {"question": f"{method} {spath}",
+                          "answer": brief, "ms": ams}
+            else:
+                q = target.get("smoke_question", "一共有多少条记录")
+                res = _post(f"{base}/api/ask", {"question": q, "use_cache": False})
+                ams = int((time.perf_counter() - t) * 1000)
+                ok = res.get("status") == "ok" and bool(res.get("answer"))
+                steps.append({"name": "端到端问数", "status": OK if ok else FAIL,
+                              "ms": f"{ams}ms",
+                              "detail": f"「{q}」→ {(res.get('answer') or '')[:40]}"})
+                sample = {"question": q, "answer": (res.get("answer") or "")[:200],
+                          "ms": ams}
         except Exception as e:
             steps.append({"name": "端到端问数", "status": FAIL, "ms": "—",
                           "detail": str(e)[:120]})
