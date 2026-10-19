@@ -39,7 +39,10 @@ def load_target(filename):
         path = filename                     # 也允许传绝对路径
     with open(path, encoding="utf-8") as f:
         t = json.load(f)
-    t["app_dir"] = os.path.abspath(t["app_dir"])
+    p = t["app_dir"]
+    if not os.path.isabs(p):
+        p = os.path.join(ROOT, p)           # 相对路径按工具包根目录解析
+    t["app_dir"] = os.path.abspath(p)
     t["_file"] = os.path.basename(path)
     return t
 

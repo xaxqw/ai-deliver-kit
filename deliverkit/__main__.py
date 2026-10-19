@@ -47,7 +47,11 @@ def line(width=78, ch="-"):
 def load_target(path):
     with open(path, encoding="utf-8") as f:
         t = json.load(f)
-    t["app_dir"] = os.path.abspath(t["app_dir"])
+    p = t["app_dir"]
+    if not os.path.isabs(p):
+        # 支持相对路径（相对工具包根目录），换台机器 clone 下来也能跑
+        p = os.path.join(KIT_DIR, p)
+    t["app_dir"] = os.path.abspath(p)
     return t
 
 
